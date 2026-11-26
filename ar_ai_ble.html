@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AR AI 멀티 과목 스캐너 & BLE 연동</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter & Noto Sans KR -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+        body {
+            font-family: 'Noto Sans KR', 'Inter', sans-serif;
+            background-color: #070b14;
+            color: #f8fafc;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* AR 스캐닝 애니메이션 */
+        @keyframes scanLine {
+            0% { top: 4%; opacity: 0; }
+            15% { opacity: 1; }
+            85% { opacity: 1; }
+            100% { top: 96%; opacity: 0; }
+        }
+
+        .scanning-laser {
+            position: absolute;
+            left: 4%;
+            width: 92%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #3b82f6, #38bdf8, #3b82f6, transparent);
+            box-shadow: 0 0 18px 4px rgba(56, 189, 248, 0.85);
+            animation: scanLine 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            z-index: 20;
+        }
+
+        /* AR 파란색 정답 오버레이 배지 */
+        .ar-answer-badge {
+            background: rgba(10, 18, 36, 0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 2px solid #38bdf8;
+            box-shadow: 0 4px 24px rgba(2, 132, 199, 0.65), inset 0 0 12px rgba(56, 189, 248, 0.35);
+            color: #38bdf8;
+            text-shadow: 0 0 12px rgba(56, 189, 248, 0.95);
+            transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+            animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+            transform: translate(-50%, -50%);
+        }
+
+        .ar-answer-badge:hover {
+            transform: translate(-50%, -50%) scale(1.06);
+            box-shadow: 0 0 30px rgba(56, 189, 248, 0.9), inset 0 0 15px rgba(56, 189, 248, 0.5);
+        }
+
+        @keyframes popIn {
+            0% { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        }
+
+        /* 문제 영역 바운딩 박스 하이라이트 */
+        .ar-bounding-box {
+            border: 2px dashed rgba(56, 189, 248, 0.75);
+            background-color: rgba(14, 165, 233, 0.12);
+            box-shadow: 0 0 16px rgba(14, 165, 233, 0.25);
+            border-radius: 12px;
+            pointer-events: none;
+            transition: all 0.3s ease;
+        }
+
+        /* 조준선 코너 스타일 */
+        .reticle-corner {
+            position: absolute;
+            width: 28px;
+            height: 28px;
+            border-color: rgba(255, 255, 255, 0.8);
+            border-style: solid;
+            pointer-events: none;
+            transition: border-color 0.3s ease;
+        }
+
+        /* 블루투스 연결 펄스 효과 */
+        @keyframes blePulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.5); }
+            50% { box-shadow: 0 0 0 6px rgba(56, 189, 248, 0); }
+        }
+        .ble-connected-pulse {
+            animation: blePulse 2s infinite;
+        }
+
+        /* 가로 스크롤바 숨김 (과목 필터 바) */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* 커스텀 스크롤바 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(56, 189, 248, 0.45);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between select-none">
+
+    <!-- 상단 헤더 & 블루투스 상태 바 -->
+    <header class="w-full bg-slate-900/85 backdrop-blur-md border-b border-slate-800/90 sticky top-0 z-40">
+        <div class="max-w-4xl mx-auto px-3 sm:px-5 py-2.5 flex items-center justify-between gap-2">
+            <!-- 좌측 로고 -->
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400 shadow-lg shadow-sky-500/10 shrink-0">
+                    <i class="ph-bold ph-scan text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-sm sm:text-base font-extrabold tracking-tight text-white flex items-center gap-1.5">
+                        AR 전과목 스캐너
+                        <span class="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-400/30">ALL-IN-ONE</span>
+                    </h1>
+                    <p class="text-[11px] text-slate-400 hidden sm:block">수학·영어·국어·과학·사회 자동 인식 & 파란색 AR 정답 오버레이</p>
+                </div>
+            </div>
+
+            <!-- 우측 컨트롤: 블루투스 기기 연결 + 샘플 테스트 + 카메라 전환 -->
+            <div class="flex items-center gap-1.5 sm:gap-2">
+                <!-- 블루투스 연결 버튼 -->
+                <button id="btnBluetoothModal" class="px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5 shadow-md" title="블루투스 기기 연결 및 데이터 전송">
+                    <span id="bleStatusDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+                    <i class="ph-bold ph-bluetooth text-sky-400 text-sm"></i>
+                    <span id="bleHeaderLabel" class="max-w-[90px] sm:max-w-[130px] truncate">기기 연결</span>
+                </button>
+
+                <!-- 복합 과목 샘플 테스트 버튼 -->
+                <button id="btnSample" class="px-2.5 sm:px-3 py-1.5 rounded-xl bg-sky-950/80 hover:bg-sky-900 text-sky-300 text-xs font-semibold border border-sky-500/40 transition flex items-center gap-1.5" title="전 과목 복합 샘플 문제로 테스트">
+                    <i class="ph-fill ph-sparkle text-sky-400"></i>
+                    <span>전과목 샘플</span>
+                </button>
+
+                <!-- 카메라 전환 버튼 -->
+                <button id="btnSwitchCamera" class="p-1.5 sm:p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition hidden" title="전/후면 카메라 전환">
+                    <i class="ph ph-camera-rotate text-base sm:text-lg"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- 과목 선택 필터 바 -->
+        <div class="max-w-4xl mx-auto px-3 sm:px-5 pb-2.5 pt-0.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            <span class="text-[11px] font-bold text-slate-400 mr-1 shrink-0 flex items-center gap-1">
+                <i class="ph-bold ph-funnel"></i> 과목:
+            </span>
+            <button data-subject="자동 (전과목)" class="subject-chip active px-3 py-1 rounded-full text-xs font-bold bg-sky-500 text-slate-950 shadow-md shadow-sky-500/25 transition shrink-0">
+                전체 자동
+            </button>
+            <button data-subject="수학" class="subject-chip px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/80 transition shrink-0">
+                수학
+            </button>
+            <button data-subject="영어" class="subject-chip px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/80 transition shrink-0">
+                영어
+            </button>
+            <button data-subject="국어" class="subject-chip px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/80 transition shrink-0">
+                국어
+            </button>
+            <button data-subject="과학" class="subject-chip px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/80 transition shrink-0">
+                과학
+            </button>
+            <button data-subject="사회/한국사" class="subject-chip px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/80 transition shrink-0">
+                사회·한국사
+            </button>
+        </div>
+    </header>
+
+    <!-- 메인 뷰포트 영역 (카메라 / 캡처 이미지 / AR 파란 글씨 오버레이) -->
+    <main class="flex-1 w-full max-w-4xl mx-auto p-3 sm:p-5 flex flex-col items-center justify-center relative">
+        
+        <!-- 알림 메시지 배너 (alert 대체) -->
+        <div id="toastMessage" class="fixed top-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-slate-900/95 border border-slate-700 text-xs sm:text-sm text-white shadow-2xl backdrop-blur-md flex items-center gap-2 transition-all duration-300 opacity-0 pointer-events-none translate-y-[-10px] max-w-[90vw]">
+            <i id="toastIcon" class="ph-fill ph-info text-sky-400 text-lg shrink-0"></i>
+            <span id="toastText" class="truncate">알림 메시지</span>
+        </div>
+
+        <!-- 뷰어 컨테이너 -->
+        <div id="viewerContainer" class="relative w-full aspect-[3/4] sm:aspect-[4/3] max-h-[65vh] bg-slate-950 rounded-3xl overflow-hidden border-2 border-slate-800 shadow-2xl flex items-center justify-center">
+            
+            <!-- 1. 실시간 카메라 비디오 피드 -->
+            <video id="cameraVideo" class="w-full h-full object-cover" autoplay playsinline muted></video>
+
+            <!-- 2. 캡처되거나 업로드된 정지 이미지 -->
+            <img id="capturedImage" class="w-full h-full object-contain bg-black hidden" alt="스캔된 문제 이미지" />
+
+            <!-- 3. 카메라 미지원/거부 시 안내 플레이스홀더 -->
+            <div id="cameraFallbackUI" class="hidden absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-900/95 z-10">
+                <div class="w-16 h-16 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 mb-4">
+                    <i class="ph ph-camera-slash text-3xl"></i>
+                </div>
+                <h3 class="text-lg font-bold text-white mb-1">카메라를 사용할 수 없습니다</h3>
+                <p class="text-xs sm:text-sm text-slate-400 max-w-sm mb-5 leading-relaxed">
+                    브라우저 카메라 권한이 차단되었거나 장치가 없습니다.<br>문제 사진을 업로드하거나 <strong>전과목 샘플</strong>을 열어 AR 기능을 테스트해보세요.
+                </p>
+                <div class="flex flex-wrap justify-center gap-3">
+                    <button onclick="document.getElementById('fileInput').click()" class="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold shadow-lg shadow-sky-600/30 transition flex items-center gap-2">
+                        <i class="ph-bold ph-upload-simple"></i>
+                        사진 업로드하기
+                    </button>
+                    <button id="btnFallbackSample" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 text-sm font-semibold border border-sky-500/40 transition flex items-center gap-2">
+                        <i class="ph-fill ph-sparkle text-sky-400"></i>
+                        전과목 샘플 열기
+                    </button>
+                </div>
+            </div>
+
+            <!-- 4. 스캐닝 조준선 (Reticle) 가이드 -->
+            <div id="reticleOverlay" class="absolute inset-6 sm:inset-10 pointer-events-none z-10 transition-opacity duration-300">
+                <div class="reticle-corner top-0 left-0 border-t-4 border-l-4 rounded-tl-xl"></div>
+                <div class="reticle-corner top-0 right-0 border-t-4 border-r-4 rounded-tr-xl"></div>
+                <div class="reticle-corner bottom-0 left-0 border-b-4 border-l-4 rounded-bl-xl"></div>
+                <div class="reticle-corner bottom-0 right-0 border-b-4 border-r-4 rounded-br-xl"></div>
+                
+                <div class="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-900/75 backdrop-blur-md text-sky-300 text-[11px] font-bold border border-sky-500/30 whitespace-nowrap">
+                    선택 모드: <span id="activeSubjectBadge">전체 자동</span>
+                </div>
+
+                <div class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3.5 py-1 rounded-full bg-black/65 backdrop-blur-sm text-white/90 text-xs font-medium whitespace-nowrap border border-white/10">
+                    사각형 안에 문제를 비추고 스캔하세요
+                </div>
+            </div>
+
+            <!-- 5. AI 분석 중 레이저 애니메이션 및 로딩 오버레이 -->
+            <div id="scanningOverlay" class="hidden absolute inset-0 bg-sky-950/35 backdrop-blur-[2px] z-20 flex flex-col items-center justify-center">
+                <div class="scanning-laser"></div>
+                <div class="px-5 py-3.5 rounded-2xl bg-slate-900/95 border border-sky-400/50 shadow-2xl flex items-center gap-3.5">
+                    <i class="ph-bold ph-spinner animate-spin text-sky-400 text-2xl"></i>
+                    <div class="text-left">
+                        <p class="text-sm font-bold text-white">전과목 AI 문제 인식 및 풀이 중...</p>
+                        <p class="text-xs text-sky-300">파란색 AR 정답 좌표와 해설을 생성하고 있습니다</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 6. AR 정답 오버레이 컨테이너 (정지 이미지 위에 정확한 비율로 매핑됨) -->
+            <div id="arOverlayLayer" class="hidden absolute inset-0 z-30 pointer-events-none overflow-hidden">
+                <!-- 동적 생성되는 바운딩 박스 및 파란 글씨 정답 배지 -->
+            </div>
+
+            <!-- 7. 가상 스마트 안경/HUD 미니 오버레이 (시뮬레이션 연결 시 우측 하단 표시) -->
+            <div id="virtualHudMiniPreview" class="hidden absolute bottom-3 left-3 z-30 max-w-[230px] p-2.5 rounded-2xl bg-slate-950/90 border border-sky-400/50 backdrop-blur-md shadow-2xl pointer-events-auto cursor-pointer" title="블루투스 기기 패널 열기">
+                <div class="flex items-center justify-between gap-2 mb-1">
+                    <span class="text-[10px] font-bold text-sky-400 flex items-center gap-1">
+                        <i class="ph-fill ph-eyeglasses"></i> AR 스마트 글래스 HUD
+                    </span>
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                </div>
+                <p id="virtualHudText" class="text-[11px] text-sky-200 font-mono leading-snug truncate">
+                    [연결됨] 스캔 대기 중...
+                </p>
+            </div>
+
+            <!-- 우측 상단 오버레이 컨트롤 (결과 화면일 때 표시) -->
+            <div id="resultTopControls" class="hidden absolute top-3 right-3 z-30 flex items-center gap-2">
+                <!-- BLE 기기 재전송 버튼 -->
+                <button id="btnQuickBleSend" class="px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-sky-300 text-xs font-bold border border-sky-500/40 backdrop-blur-md shadow-lg flex items-center gap-1 transition" title="연결된 블루투스 기기로 정답 전송">
+                    <i class="ph-bold ph-bluetooth-connected"></i>
+                    <span class="hidden sm:inline">BLE 전송</span>
+                </button>
+                <!-- AR 정답 토글 버튼 -->
+                <button id="btnToggleAR" class="px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-sky-400 text-xs font-bold border border-sky-500/40 backdrop-blur-md shadow-lg flex items-center gap-1.5 transition">
+                    <i class="ph-fill ph-eye"></i>
+                    <span>AR 숨기기</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 숨겨진 캔버스 및 파일 입력 -->
+        <canvas id="captureCanvas" class="hidden"></canvas>
+        <input type="file" id="fileInput" accept="image/*" class="hidden" />
+
+        <!-- 하단 컨트롤 바 -->
+        <div class="w-full mt-4 flex items-center justify-between gap-2.5 sm:gap-3 px-1">
+            <!-- 좌측: 갤러리/파일 업로드 버튼 -->
+            <button onclick="document.getElementById('fileInput').click()" class="flex-1 sm:flex-none sm:w-36 py-3.5 px-3 sm:px-4 rounded-2xl bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold text-xs sm:text-sm border border-slate-700 transition flex items-center justify-center gap-2 shadow-lg">
+                <i class="ph-bold ph-image text-lg text-sky-400"></i>
+                <span>사진 불러오기</span>
+            </button>
+
+            <!-- 중앙: 메인 액션 버튼 (스캔 및 풀기 / 다시 찍기) -->
+            <button id="btnMainAction" class="flex-[2] sm:flex-1 max-w-xs py-3.5 px-5 sm:px-6 rounded-2xl bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-500 hover:to-sky-400 active:scale-95 text-white font-bold text-sm sm:text-base shadow-xl shadow-sky-600/30 transition flex items-center justify-center gap-2 border border-sky-300/30">
+                <i id="btnMainIcon" class="ph-bold ph-scan text-xl"></i>
+                <span id="btnMainText">문제 스캔 & 풀기</span>
+            </button>
+
+            <!-- 우측: 상세 풀이 보기 버튼 -->
+            <button id="btnShowExplanation" disabled class="flex-1 sm:flex-none sm:w-36 py-3.5 px-3 sm:px-4 rounded-2xl bg-slate-800/50 text-slate-500 font-semibold text-xs sm:text-sm border border-slate-800 transition flex items-center justify-center gap-2 cursor-not-allowed">
+                <i class="ph-bold ph-list-numbers text-lg"></i>
+                <span>상세 풀이</span>
+            </button>
+        </div>
+    </main>
+
+    <!-- ===================================================================== -->
+    <!-- 1. 하단 슬라이드업 상세 풀이 패널 (Bottom Sheet Drawer)               -->
+    <!-- ===================================================================== -->
+    <div id="explanationDrawer" class="fixed inset-0 z-50 hidden">
+        <div id="drawerBackdrop" class="absolute inset-0 bg-black/75 backdrop-blur-sm transition-opacity opacity-0"></div>
+        
+        <div id="drawerPanel" class="absolute bottom-0 left-0 right-0 max-w-2xl mx-auto bg-slate-900 border-t border-x border-slate-700/80 rounded-t-3xl p-5 sm:p-6 shadow-2xl transform translate-y-full transition-transform duration-300 ease-out max-h-[85vh] flex flex-col">
+            <div class="w-12 h-1.5 bg-slate-700 rounded-full mx-auto mb-4"></div>
+            
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div class="flex items-center gap-2.5">
+                    <span class="w-8 h-8 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center border border-sky-400/30">
+                        <i class="ph-bold ph-chalkboard-teacher text-lg"></i>
+                    </span>
+                    <div>
+                        <h2 class="text-base sm:text-lg font-bold text-white">AI 전과목 상세 풀이 & 해설</h2>
+                        <p class="text-[11px] text-slate-400">각 문제의 정답을 블루투스 기기로 개별 전송할 수 있습니다</p>
+                    </div>
+                </div>
+                <button id="btnCloseDrawer" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition">
+                    <i class="ph-bold ph-x text-lg"></i>
+                </button>
+            </div>
+
+            <div id="explanationContent" class="py-4 overflow-y-auto space-y-4 text-sm sm:text-base text-slate-200 leading-relaxed">
+                <!-- 동적 문제 카드 렌더링 -->
+            </div>
+
+            <div class="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <button id="btnSendAllBleDrawer" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs sm:text-sm border border-sky-500/40 transition flex items-center gap-2">
+                    <i class="ph-bold ph-bluetooth-connected"></i>
+                    <span>전체 정답 BLE 전송</span>
+                </button>
+                <button id="btnCloseDrawerBottom" class="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs sm:text-sm transition">
+                    확인 완료
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- 2. 블루투스 기기 연결 및 실시간 데이터 전송 모달                    -->
+    <!-- ===================================================================== -->
+    <div id="bluetoothModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+        <div id="bleModalBackdrop" class="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity opacity-0"></div>
+        
+        <div id="bleModalCard" class="relative w-full max-w-lg bg-slate-900 border border-slate-700/90 rounded-3xl p-5 sm:p-6 shadow-2xl transform scale-95 opacity-0 transition-all duration-200 flex flex-col max-h-[88vh]">
+            <!-- 헤더 -->
+            <div class="flex items-center justify-between pb-3.5 border-b border-slate-800">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400">
+                        <i class="ph-bold ph-bluetooth text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base sm:text-lg font-bold text-white">블루투스 외부 기기 연동</h3>
+                        <p class="text-xs text-slate-400">스마트 글래스, BLE HUD, 아두이노/ESP32 디스플레이</p>
+                    </div>
+                </div>
+                <button id="btnCloseBleModal" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition">
+                    <i class="ph-bold ph-x text-lg"></i>
+                </button>
+            </div>
+
+            <!-- 본문 -->
+            <div class="py-4 overflow-y-auto space-y-4">
+                <!-- 현재 연결 상태 카드 -->
+                <div class="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div id="bleModalIconBox" class="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                            <i class="ph-bold ph-broadcast text-xl"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="text-xs text-slate-400">현재 연결 상태</p>
+                            <p id="bleModalDeviceName" class="text-sm font-bold text-white truncate">연결된 기기 없음</p>
+                            <p id="bleModalDeviceSub" class="text-[11px] text-slate-500 truncate">주변 BLE 기기를 검색하거나 가상 HUD를 연결하세요</p>
+                        </div>
+                    </div>
+                    <button id="btnDisconnectBle" class="hidden px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-bold shrink-0 transition">
+                        연결 해제
+                    </button>
+                </div>
+
+                <!-- 연결 버튼 그룹 -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <!-- 실제 Web Bluetooth 검색 -->
+                    <button id="btnScanRealBle" class="py-3 px-4 rounded-2xl bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-500 hover:to-sky-400 text-white font-bold text-xs sm:text-sm shadow-lg shadow-sky-600/25 transition flex items-center justify-center gap-2">
+                        <i class="ph-bold ph-magnifying-glass text-base"></i>
+                        <span>주변 BLE 기기 찾기</span>
+                    </button>
+
+                    <!-- 가상 AR 스마트 안경 시뮬레이션 -->
+                    <button id="btnConnectVirtualBle" class="py-3 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-sky-300 font-bold text-xs sm:text-sm border border-sky-500/40 transition flex items-center justify-center gap-2">
+                        <i class="ph-bold ph-eyeglasses text-base text-sky-400"></i>
+                        <span>가상 스마트 글래스 연결</span>
+                    </button>
+                </div>
+
+                <!-- 자동 전송 옵션 토글 -->
+                <div class="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-800/60 border border-slate-700/70">
+                    <div>
+                        <p class="text-xs font-bold text-slate-200">스캔 완료 시 자동 블루투스 전송</p>
+                        <p class="text-[11px] text-slate-400">문제 풀이가 끝나면 연결된 기기로 즉시 정답 패킷 전송</p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="chkAutoSendBle" class="sr-only peer" checked>
+                        <div class="w-10 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sky-500"></div>
+                    </label>
+                </div>
+
+                <!-- 수동 테스트 메시지 전송 입력창 -->
+                <div class="space-y-1.5">
+                    <label class="text-xs font-bold text-slate-400 flex items-center justify-between">
+                        <span>연결된 기기로 테스트 데이터 전송</span>
+                        <span class="text-[10px] font-mono text-slate-500">UTF-8 / BLE UART</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <input type="text" id="inputBleCustomMsg" placeholder="예: [수학] 1번 정답: x = 5" class="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400">
+                        <button id="btnSendCustomBle" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition shrink-0">
+                            전송
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 실시간 BLE 송수신 데이터 콘솔 로그 -->
+                <div class="space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-400 flex items-center gap-1.5">
+                            <i class="ph-bold ph-terminal-window text-sky-400"></i> 블루투스 실시간 송수신 로그
+                        </span>
+                        <button id="btnClearBleLog" class="text-[11px] text-slate-500 hover:text-slate-300">로그 지우기</button>
+                    </div>
+                    <div id="bleLogConsole" class="h-32 p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-y-auto space-y-1">
+                        <div class="text-slate-500">[SYSTEM] Web Bluetooth 모듈 준비 완료.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 전역 상태 및 BLE UART 표준 UUID 상수
+        // ==========================================
+        const BLE_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'; // Nordic UART Service
+        const BLE_UART_RX_CHAR_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Write (Central -> Peripheral)
+        const BLE_UART_TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify (Peripheral -> Central)
+
+        const state = {
+            mode: 'camera', // 'camera' | 'result'
+            selectedSubject: '자동 (전과목)',
+            stream: null,
+            facingMode: 'environment',
+            hasMultipleCameras: false,
+            isScanning: false,
+            arVisible: true,
+            lastImageBase64: null,
+            lastImageMime: 'image/jpeg',
+            solvedResults: [], // [{ subject, problem_text, answer, explanation, box_2d }]
+            
+            // 블루투스 상태
+            ble: {
+                connected: false,
+                isVirtual: false,
+                device: null,
+                server: null,
+                writeCharacteristic: null,
+                deviceName: ''
+            }
+        };
+
+        const els = {
+            video: document.getElementById('cameraVideo'),
+            capturedImg: document.getElementById('capturedImage'),
+            canvas: document.getElementById('captureCanvas'),
+            fallbackUI: document.getElementById('cameraFallbackUI'),
+            reticle: document.getElementById('reticleOverlay'),
+            activeSubjectBadge: document.getElementById('activeSubjectBadge'),
+            scanningOverlay: document.getElementById('scanningOverlay'),
+            arLayer: document.getElementById('arOverlayLayer'),
+            resultTopControls: document.getElementById('resultTopControls'),
+            
+            btnMainAction: document.getElementById('btnMainAction'),
+            btnMainIcon: document.getElementById('btnMainIcon'),
+            btnMainText: document.getElementById('btnMainText'),
+            btnShowExplanation: document.getElementById('btnShowExplanation'),
+            btnToggleAR: document.getElementById('btnToggleAR'),
+            btnQuickBleSend: document.getElementById('btnQuickBleSend'),
+            btnSwitchCamera: document.getElementById('btnSwitchCamera'),
+            btnSample: document.getElementById('btnSample'),
+            btnFallbackSample: document.getElementById('btnFallbackSample'),
+            fileInput: document.getElementById('fileInput'),
+            
+            // 상세 풀이 드로어
+            drawer: document.getElementById('explanationDrawer'),
+            drawerBackdrop: document.getElementById('drawerBackdrop'),
+            drawerPanel: document.getElementById('drawerPanel'),
+            explanationContent: document.getElementById('explanationContent'),
+            btnCloseDrawer: document.getElementById('btnCloseDrawer'),
+            btnCloseDrawerBottom: document.getElementById('btnCloseDrawerBottom'),
+            btnSendAllBleDrawer: document.getElementById('btnSendAllBleDrawer'),
+
+            // 블루투스 모달 및 상태 UI
+            btnBluetoothModal: document.getElementById('btnBluetoothModal'),
+            bleStatusDot: document.getElementById('bleStatusDot'),
+            bleHeaderLabel: document.getElementById('bleHeaderLabel'),
+            bluetoothModal: document.getElementById('bluetoothModal'),
+            bleModalBackdrop: document.getElementById('bleModalBackdrop'),
+            bleModalCard: document.getElementById('bleModalCard'),
+            btnCloseBleModal: document.getElementById('btnCloseBleModal'),
+            bleModalIconBox: document.getElementById('bleModalIconBox'),
+            bleModalDeviceName: document.getElementById('bleModalDeviceName'),
+            bleModalDeviceSub: document.getElementById('bleModalDeviceSub'),
+            btnDisconnectBle: document.getElementById('btnDisconnectBle'),
+            btnScanRealBle: document.getElementById('btnScanRealBle'),
+            btnConnectVirtualBle: document.getElementById('btnConnectVirtualBle'),
+            chkAutoSendBle: document.getElementById('chkAutoSendBle'),
+            inputBleCustomMsg: document.getElementById('inputBleCustomMsg'),
+            btnSendCustomBle: document.getElementById('btnSendCustomBle'),
+            bleLogConsole: document.getElementById('bleLogConsole'),
+            btnClearBleLog: document.getElementById('btnClearBleLog'),
+            virtualHudMiniPreview: document.getElementById('virtualHudMiniPreview'),
+            virtualHudText: document.getElementById('virtualHudText'),
+
+            // 토스트 & 뷰어
+            toast: document.getElementById('toastMessage'),
+            toastIcon: document.getElementById('toastIcon'),
+            toastText: document.getElementById('toastText'),
+            viewerContainer: document.getElementById('viewerContainer')
+        };
+
+        // ==========================================
+        // 유틸리티: 알림 토스트 (alert 대체)
+        // ==========================================
+        let toastTimeout = null;
+        function showToast(message, type = 'info') {
+            els.toastText.textContent = message;
+            els.toastIcon.className = type === 'error' 
+                ? 'ph-fill ph-warning-circle text-rose-400 text-lg shrink-0' 
+                : type === 'success'
+                ? 'ph-fill ph-check-circle text-emerald-400 text-lg shrink-0'
+                : 'ph-fill ph-info text-sky-400 text-lg shrink-0';
+
+            els.toast.classList.remove('opacity-0', 'translate-y-[-10px]', 'pointer-events-none');
+            els.toast.classList.add('opacity-100', 'translate-y-0');
+
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                els.toast.classList.add('opacity-0', 'translate-y-[-10px]', 'pointer-events-none');
+                els.toast.classList.remove('opacity-100', 'translate-y-0');
+            }, 3400);
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        // ==========================================
+        // 과목 필터 선택 로직
+        // ==========================================
+        document.querySelectorAll('.subject-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                document.querySelectorAll('.subject-chip').forEach(c => {
+                    c.classList.remove('active', 'bg-sky-500', 'text-slate-950', 'font-bold', 'shadow-md', 'shadow-sky-500/25');
+                    c.classList.add('bg-slate-800/90', 'text-slate-300', 'font-semibold', 'border', 'border-slate-700/80');
+                });
+                chip.classList.remove('bg-slate-800/90', 'text-slate-300', 'font-semibold', 'border', 'border-slate-700/80');
+                chip.classList.add('active', 'bg-sky-500', 'text-slate-950', 'font-bold', 'shadow-md', 'shadow-sky-500/25');
+
+                state.selectedSubject = chip.dataset.subject;
+                els.activeSubjectBadge.textContent = state.selectedSubject;
+                showToast(`과목 모드 변경: ${state.selectedSubject}`, 'info');
+            });
+        });
+
+        // ==========================================
+        // 카메라 초기화 및 제어
+        // ==========================================
+        async function initCamera() {
+            stopCameraStream();
+            
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showCameraFallback();
+                return;
+            }
+
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                if (videoDevices.length > 1) {
+                    state.hasMultipleCameras = true;
+                    els.btnSwitchCamera.classList.remove('hidden');
+                }
+
+                const constraints = {
+                    video: {
+                        facingMode: state.facingMode,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
+                    audio: false
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                state.stream = stream;
+                els.video.srcObject = stream;
+                
+                els.fallbackUI.classList.add('hidden');
+                els.video.classList.remove('hidden');
+                setCameraModeUI();
+            } catch (err) {
+                console.warn('카메라 접근 실패:', err);
+                showCameraFallback();
+            }
+        }
+
+        function stopCameraStream() {
+            if (state.stream) {
+                state.stream.getTracks().forEach(track => track.stop());
+                state.stream = null;
+            }
+        }
+
+        function showCameraFallback() {
+            els.video.classList.add('hidden');
+            els.fallbackUI.classList.remove('hidden');
+            els.reticle.classList.add('hidden');
+        }
+
+        // ==========================================
+        // UI 상태 전환 (카메라 모드 <-> 결과 오버레이 모드)
+        // ==========================================
+        function setCameraModeUI() {
+            state.mode = 'camera';
+            state.solvedResults = [];
+            
+            els.capturedImg.classList.add('hidden');
+            els.arLayer.classList.add('hidden');
+            els.arLayer.innerHTML = '';
+            els.resultTopControls.classList.add('hidden');
+            
+            if (state.stream) {
+                els.video.classList.remove('hidden');
+                els.fallbackUI.classList.add('hidden');
+                els.reticle.classList.remove('hidden');
+            } else {
+                showCameraFallback();
+            }
+
+            els.btnMainIcon.className = 'ph-bold ph-scan text-xl';
+            els.btnMainText.textContent = '문제 스캔 & 풀기';
+            els.btnMainAction.className = 'flex-[2] sm:flex-1 max-w-xs py-3.5 px-5 sm:px-6 rounded-2xl bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-500 hover:to-sky-400 active:scale-95 text-white font-bold text-sm sm:text-base shadow-xl shadow-sky-600/30 transition flex items-center justify-center gap-2 border border-sky-300/30';
+
+            els.btnShowExplanation.disabled = true;
+            els.btnShowExplanation.className = 'flex-1 sm:flex-none sm:w-36 py-3.5 px-3 sm:px-4 rounded-2xl bg-slate-800/50 text-slate-500 font-semibold text-xs sm:text-sm border border-slate-800 transition flex items-center justify-center gap-2 cursor-not-allowed';
+        }
+
+        function setResultModeUI(imageDataUrl) {
+            state.mode = 'result';
+            state.arVisible = true;
+            
+            els.video.classList.add('hidden');
+            els.fallbackUI.classList.add('hidden');
+            els.reticle.classList.add('hidden');
+            
+            els.capturedImg.src = imageDataUrl;
+            els.capturedImg.classList.remove('hidden');
+            els.resultTopControls.classList.remove('hidden');
+            els.btnToggleAR.innerHTML = '<i class="ph-fill ph-eye"></i><span>AR 숨기기</span>';
+
+            els.btnMainIcon.className = 'ph-bold ph-arrow-counter-clockwise text-xl';
+            els.btnMainText.textContent = '다시 스캔하기';
+            els.btnMainAction.className = 'flex-[2] sm:flex-1 max-w-xs py-3.5 px-5 sm:px-6 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-bold text-sm sm:text-base shadow-xl transition flex items-center justify-center gap-2 border border-slate-600';
+        }
+
+        function enableExplanationButton() {
+            els.btnShowExplanation.disabled = false;
+            els.btnShowExplanation.className = 'flex-1 sm:flex-none sm:w-36 py-3.5 px-3 sm:px-4 rounded-2xl bg-sky-950/90 hover:bg-sky-900 active:scale-95 text-sky-300 font-semibold text-xs sm:text-sm border border-sky-500/40 transition flex items-center justify-center gap-2 shadow-lg shadow-sky-950/50 cursor-pointer';
+        }
+
+        // ==========================================
+        // 이미지 캡처, 파일 업로드 및 전과목 샘플 생성
+        // ==========================================
+        function captureFromVideo() {
+            if (!state.stream || els.video.videoWidth === 0) {
+                showToast('카메라 영상이 준비되지 않았습니다. 사진을 업로드해주세요.', 'error');
+                return null;
+            }
+
+            const canvas = els.canvas;
+            canvas.width = els.video.videoWidth;
+            canvas.height = els.video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(els.video, 0, 0, canvas.width, canvas.height);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+            const base64 = dataUrl.split(',')[1];
+            return { dataUrl, base64, mimeType: 'image/jpeg' };
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                const resized = await resizeImageDataUrl(e.target.result, 1600);
+                processImageAndSolve(resized.dataUrl, resized.base64, resized.mimeType);
+            };
+            reader.readAsDataURL(file);
+            event.target.value = '';
+        }
+
+        function resizeImageDataUrl(dataUrl, maxDim) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    let { width, height } = img;
+                    if (width > maxDim || height > maxDim) {
+                        if (width > height) {
+                            height = Math.round((height * maxDim) / width);
+                            width = maxDim;
+                        } else {
+                            width = Math.round((width * maxDim) / height);
+                            height = maxDim;
+                        }
+                    }
+                    const canvas = els.canvas;
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    const outUrl = canvas.toDataURL('image/jpeg', 0.88);
+                    resolve({
+                        dataUrl: outUrl,
+                        base64: outUrl.split(',')[1],
+                        mimeType: 'image/jpeg'
+                    });
+                };
+                img.src = dataUrl;
+            });
+        }
+
+        // 수학 + 영어 + 과학 + 한국사가 모두 포함된 복합 시험지 샘플 생성
+        function generateAndSolveSample() {
+            const canvas = els.canvas;
+            canvas.width = 1100;
+            canvas.height = 880;
+            const ctx = canvas.getContext('2d');
+
+            // 시험지 용지 배경
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 시험지 상단 헤더 박스
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(50, 40, canvas.width - 100, 75);
+            ctx.fillStyle = '#0f172a';
+            ctx.font = 'bold 28px "Noto Sans KR", sans-serif';
+            ctx.fillText('2026학년도 모의 평가 - 전과목 복합 영역 (수학·영어·과학·한국사)', 80, 88);
+
+            // 중앙 세로 구분선 (모의고사 2단 편집 스타일)
+            ctx.strokeStyle = '#cbd5e1';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 140);
+            ctx.lineTo(canvas.width / 2, canvas.height - 45);
+            ctx.stroke();
+
+            // [1번 문제 - 수학] 좌측 상단
+            ctx.fillStyle = '#1e293b';
+            ctx.font = 'bold 24px "Noto Sans KR", sans-serif';
+            ctx.fillText('1. [수학] 다음 이차방정식의 두 근의 합을 구하시오.', 65, 200);
+            ctx.font = 'bold 34px "Inter", sans-serif';
+            ctx.fillStyle = '#0f172a';
+            ctx.fillText('x² - 7x + 12 = 0', 110, 265);
+
+            // [2번 문제 - 영어] 좌측 하단
+            ctx.fillStyle = '#1e293b';
+            ctx.font = 'bold 24px "Noto Sans KR", sans-serif';
+            ctx.fillText('2. [영어] 빈칸에 가장 알맞은 관계대명사는?', 65, 480);
+            ctx.font = '600 24px "Inter", sans-serif';
+            ctx.fillStyle = '#0f172a';
+            ctx.fillText('The scientist (       ) discovered penicillin', 80, 540);
+            ctx.fillText('was Alexander Fleming.', 80, 580);
+            ctx.font = '22px "Inter", sans-serif';
+            ctx.fillStyle = '#334155';
+            ctx.fillText('① which    ② who    ③ where    ④ whose', 80, 640);
+
+            // [3번 문제 - 과학] 우측 상단
+            ctx.fillStyle = '#1e293b';
+            ctx.font = 'bold 24px "Noto Sans KR", sans-serif';
+            ctx.fillText('3. [과학] 식물의 엽록체에서 빛에너지를 이용해', 580, 200);
+            ctx.fillText('포도당과 산소를 만드는 작용은 무엇인가?', 580, 238);
+            ctx.font = 'bold 26px "Noto Sans KR", sans-serif';
+            ctx.fillStyle = '#0369a1';
+            ctx.fillText('정답 작성: (                )', 600, 305);
+
+            // [4번 문제 - 한국사] 우측 하단
+            ctx.fillStyle = '#1e293b';
+            ctx.font = 'bold 24px "Noto Sans KR", sans-serif';
+            ctx.fillText('4. [한국사] 조선 세종 때 집현전 학자들과 함께', 580, 480);
+            ctx.fillText('창제하여 1446년에 반포한 우리 문자는?', 580, 518);
+            ctx.font = '22px "Noto Sans KR", sans-serif';
+            ctx.fillStyle = '#334155';
+            ctx.fillText('① 이두   ② 향찰   ③ 훈민정음   ④ 구결', 585, 585);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+            const base64 = dataUrl.split(',')[1];
+            processImageAndSolve(dataUrl, base64, 'image/jpeg');
+        }
+
+        // ==========================================
+        // Gemini Vision API 호출 (전 과목 지원)
+        // ==========================================
+        async function fetchWithRetry(url, options, maxRetries = 4) {
+            let delay = 1000;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return await response.json();
+                } catch (err) {
+                    if (attempt === maxRetries) throw err;
+                    await new Promise(res => setTimeout(res, delay));
+                    delay *= 2;
+                }
+            }
+        }
+
+        async function processImageAndSolve(dataUrl, base64Data, mimeType) {
+            if (state.isScanning) return;
+            state.isScanning = true;
+            state.lastImageBase64 = base64Data;
+            state.lastImageMime = mimeType;
+
+            setResultModeUI(dataUrl);
+            els.scanningOverlay.classList.remove('hidden');
+
+            const subjectFilterInstruction = state.selectedSubject === '자동 (전과목)'
+                ? '이미지에 포함된 수학, 영어, 국어, 과학, 사회, 한국사 등 모든 과목의 문제를 자동으로 판별하여 푸세요.'
+                : `현재 사용자가 선택한 [${state.selectedSubject}] 과목 관점을 우선 적용하되, 이미지에 있는 문제를 정확히 푸세요.`;
+
+            const systemPrompt = `당신은 대한민국 초·중·고·대학 및 자격증 시험의 모든 과목(수학, 영어, 국어, 과학, 사회, 한국사 등)을 완벽하게 인식하고 해결하는 최고 수준의 AR AI 튜터입니다.
+${subjectFilterInstruction}
+
+이미지에서 풀어야 할 모든 문제를 찾으세요.
+각 문제에 대해 다음 5가지 필드를 정확히 추출하세요:
+1. subject: 문제의 과목명 (예: "수학", "영어", "국어", "과학", "사회", "한국사" 중 하나)
+2. problem_text: 이미지에서 인식된 문제 핵심 텍스트
+3. answer: AR 화면에 파란색 글씨 배지로 띄울 간결하고 명확한 핵심 정답 (예: "7", "② who", "광합성", "③ 훈민정음", "주제: 환경 보호의 시급성"). AR 오버레이가 가독성 있게 보이도록 핵심 정답 위주로 간결하게 작성하세요.
+4. explanation: 한국어로 작성된 논리적이고 이해하기 쉬운 단계별 풀이 및 오답 분석 해설
+5. box_2d: 해당 문제 영역(또는 수식/지문/빈칸 영역)의 정규화된 바운딩 박스 좌표 [ymin, xmin, ymax, xmax] (0부터 1000 사이의 정수).
+
+만약 이미지에 풀 수 있는 문제가 없다면 빈 배열([])을 반환하세요.`;
+
+            const userPrompt = "이 이미지 속 모든 과목의 문제들을 찾아서 과목(subject), 문제 내용(problem_text), 파란 글씨 AR 정답(answer), 상세 풀이(explanation), 그리고 위치 좌표(box_2d)를 JSON 배열로 반환해주세요.";
+
+            const apiKey = ""; // 런타임 자동 주입
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+            const payload = {
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            { text: userPrompt },
+                            {
+                                inlineData: {
+                                    mimeType: mimeType,
+                                    data: base64Data
+                                }
+                            }
+                        ]
+                    }
+                ],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "ARRAY",
+                        description: "이미지에서 감지된 전과목 문제 목록 및 AR 정답 데이터",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                subject: {
+                                    type: "STRING",
+                                    description: "과목 분류 (수학, 영어, 국어, 과학, 사회, 한국사 등)"
+                                },
+                                problem_text: {
+                                    type: "STRING",
+                                    description: "인식된 문제 내용 요약"
+                                },
+                                answer: {
+                                    type: "STRING",
+                                    description: "AR 화면에 파란 글씨로 표시할 핵심 정답"
+                                },
+                                explanation: {
+                                    type: "STRING",
+                                    description: "한국어 상세 풀이 및 해설"
+                                },
+                                box_2d: {
+                                    type: "ARRAY",
+                                    description: "[ymin, xmin, ymax, xmax] 형식의 0~1000 정규화 좌표",
+                                    items: { type: "INTEGER" }
+                                }
+                            },
+                            required: ["subject", "problem_text", "answer", "explanation", "box_2d"]
+                        }
+                    }
+                }
+            };
+
+            try {
+                const result = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const rawText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!rawText) throw new Error("AI 응답이 비어있습니다.");
+
+                const parsed = JSON.parse(rawText);
+                state.solvedResults = Array.isArray(parsed) ? parsed : [];
+
+                if (state.solvedResults.length === 0) {
+                    showToast('이미지에서 풀 수 있는 문제를 찾지 못했습니다. 다시 비춰주세요.', 'error');
+                } else {
+                    showToast(`${state.solvedResults.length}개 문제 해결 완료! 파란색 AR 정답을 확인하세요.`, 'success');
+                    enableExplanationButton();
+                    renderExplanationDrawer();
+                    requestAnimationFrame(() => renderAROverlays());
+
+                    // 블루투스 기기가 연결되어 있고 자동 전송이 켜져 있으면 즉시 전송
+                    if (state.ble.connected && els.chkAutoSendBle.checked) {
+                        sendSolvedResultsToBluetooth(state.solvedResults);
+                    }
+                }
+            } catch (error) {
+                console.error("AI 분석 오류:", error);
+                showToast('문제를 분석하는 중 오류가 발생했습니다. 다시 시도해주세요.', 'error');
+            } finally {
+                state.isScanning = false;
+                els.scanningOverlay.classList.add('hidden');
+            }
+        }
+
+        // ==========================================
+        // AR 파란 글씨 오버레이 렌더링
+        // ==========================================
+        function renderAROverlays() {
+            const layer = els.arLayer;
+            layer.innerHTML = '';
+
+            if (!state.solvedResults || state.solvedResults.length === 0 || !state.arVisible) {
+                layer.classList.add('hidden');
+                return;
+            }
+
+            const img = els.capturedImg;
+            if (!img.naturalWidth || !img.naturalHeight) return;
+
+            const containerW = els.viewerContainer.clientWidth;
+            const containerH = els.viewerContainer.clientHeight;
+            const imgRatio = img.naturalWidth / img.naturalHeight;
+            const containerRatio = containerW / containerH;
+
+            let renderW, renderH, offsetX, offsetY;
+            if (imgRatio > containerRatio) {
+                renderW = containerW;
+                renderH = containerW / imgRatio;
+                offsetX = 0;
+                offsetY = (containerH - renderH) / 2;
+            } else {
+                renderH = containerH;
+                renderW = containerH * imgRatio;
+                offsetX = (containerW - renderW) / 2;
+                offsetY = 0;
+            }
+
+            state.solvedResults.forEach((item, idx) => {
+                if (!item.box_2d || item.box_2d.length < 4) return;
+                const [ymin, xmin, ymax, xmax] = item.box_2d;
+
+                const boxLeft = offsetX + (xmin / 1000) * renderW;
+                const boxTop = offsetY + (ymin / 1000) * renderH;
+                const boxWidth = ((xmax - xmin) / 1000) * renderW;
+                const boxHeight = ((ymax - ymin) / 1000) * renderH;
+
+                // 1. 문제 영역 AR 바운딩 박스
+                const boxEl = document.createElement('div');
+                boxEl.className = 'ar-bounding-box absolute';
+                boxEl.style.left = `${boxLeft}px`;
+                boxEl.style.top = `${boxTop}px`;
+                boxEl.style.width = `${Math.max(boxWidth, 24)}px`;
+                boxEl.style.height = `${Math.max(boxHeight, 24)}px`;
+                layer.appendChild(boxEl);
+
+                // 2. 선명한 파란 글씨 AR 정답 배지
+                const badgeEl = document.createElement('div');
+                badgeEl.className = 'ar-answer-badge absolute px-3 py-1 rounded-xl font-extrabold text-sm sm:text-lg tracking-wide max-w-[260px] truncate z-10 pointer-events-auto cursor-pointer flex items-center gap-1.5';
+                badgeEl.style.animationDelay = `${idx * 0.08}s`;
+
+                let badgeLeft = boxLeft + boxWidth / 2;
+                let badgeTop = boxTop - 16;
+
+                if (badgeTop < offsetY + 20) {
+                    badgeTop = boxTop + boxHeight + 18;
+                }
+                badgeLeft = Math.max(offsetX + 75, Math.min(offsetX + renderW - 75, badgeLeft));
+
+                badgeEl.style.left = `${badgeLeft}px`;
+                badgeEl.style.top = `${badgeTop}px`;
+
+                const subjectLabel = item.subject ? escapeHtml(item.subject) : '정답';
+                badgeEl.innerHTML = `
+                    <span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-sky-500/30 text-sky-200 border border-sky-400/40 shrink-0">${subjectLabel}</span>
+                    <span class="truncate">${escapeHtml(item.answer)}</span>
+                `;
+
+                badgeEl.addEventListener('click', () => openExplanationDrawer());
+                layer.appendChild(badgeEl);
+            });
+
+            layer.classList.remove('hidden');
+        }
+
+        // ==========================================
+        // 상세 풀이 패널 (Bottom Drawer) 렌더링
+        // ==========================================
+        function renderExplanationDrawer() {
+            const container = els.explanationContent;
+            container.innerHTML = '';
+
+            state.solvedResults.forEach((item, index) => {
+                const card = document.createElement('div');
+                card.className = 'p-4 rounded-2xl bg-slate-800/75 border border-slate-700/80 space-y-2.5';
+                card.innerHTML = `
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center text-[11px] font-bold">${index + 1}</span>
+                            <span class="px-2 py-0.5 rounded-md bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 text-xs font-bold">
+                                ${escapeHtml(item.subject || '일반')}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <span class="px-2.5 py-1 rounded-lg bg-sky-500/20 border border-sky-400/40 text-sky-300 font-extrabold text-xs sm:text-sm">
+                                정답: ${escapeHtml(item.answer)}
+                            </span>
+                            <button class="btn-send-single-ble p-1.5 rounded-lg bg-slate-700 hover:bg-sky-600 text-sky-300 hover:text-white transition" title="이 문제만 블루투스 기기로 전송" data-idx="${index}">
+                                <i class="ph-bold ph-bluetooth-connected text-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <p class="font-semibold text-white bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 text-xs sm:text-sm">
+                        ${escapeHtml(item.problem_text)}
+                    </p>
+                    <div class="pt-0.5">
+                        <p class="text-xs font-bold text-sky-400 mb-1 flex items-center gap-1">
+                            <i class="ph-bold ph-lightbulb"></i> 상세 풀이 및 해설
+                        </p>
+                        <p class="text-slate-300 text-xs sm:text-sm whitespace-pre-line leading-relaxed">
+                            ${escapeHtml(item.explanation)}
+                        </p>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+            // 개별 문제 BLE 전송 버튼 바인딩
+            container.querySelectorAll('.btn-send-single-ble').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const idx = Number(e.currentTarget.dataset.idx);
+                    const targetItem = state.solvedResults[idx];
+                    if (targetItem) {
+                        if (!state.ble.connected) {
+                            openBluetoothModal();
+                            showToast('먼저 블루투스 기기를 연결해주세요.', 'info');
+                            return;
+                        }
+                        sendSolvedResultsToBluetooth([targetItem], idx + 1);
+                    }
+                });
+            });
+        }
+
+        function openExplanationDrawer() {
+            if (state.solvedResults.length === 0) return;
+            els.drawer.classList.remove('hidden');
+            requestAnimationFrame(() => {
+                els.drawerBackdrop.classList.remove('opacity-0');
+                els.drawerPanel.classList.remove('translate-y-full');
+            });
+        }
+
+        function closeExplanationDrawer() {
+            els.drawerBackdrop.classList.add('opacity-0');
+            els.drawerPanel.classList.add('translate-y-full');
+            setTimeout(() => {
+                els.drawer.classList.add('hidden');
+            }, 300);
+        }
+
+        // ==========================================
+        // 블루투스 기기 연결 (Web Bluetooth API + 가상 시뮬레이션)
+        // ==========================================
+        function appendBleLog(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+            const line = document.createElement('div');
+            const colorClass = type === 'tx' ? 'text-sky-400' 
+                             : type === 'rx' ? 'text-emerald-400'
+                             : type === 'err' ? 'text-rose-400'
+                             : 'text-slate-400';
+            line.className = colorClass;
+            line.textContent = `[${time}] ${msg}`;
+            els.bleLogConsole.appendChild(line);
+            els.bleLogConsole.scrollTop = els.bleLogConsole.scrollHeight;
+        }
+
+        function updateBluetoothUI() {
+            if (state.ble.connected) {
+                els.bleStatusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 ble-connected-pulse';
+                els.bleHeaderLabel.textContent = state.ble.deviceName;
+                els.btnBluetoothModal.classList.add('border-sky-500/50', 'bg-sky-950/60');
+
+                els.bleModalIconBox.className = 'w-10 h-10 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400 shrink-0';
+                els.bleModalDeviceName.textContent = state.ble.deviceName;
+                els.bleModalDeviceSub.textContent = state.ble.isVirtual 
+                    ? '시뮬레이션 모드 (실시간 HUD 미러링 활성)' 
+                    : 'BLE GATT 연결 완료 (UTF-8 데이터 전송 가능)';
+                els.btnDisconnectBle.classList.remove('hidden');
+
+                if (state.ble.isVirtual) {
+                    els.virtualHudMiniPreview.classList.remove('hidden');
+                }
+            } else {
+                els.bleStatusDot.className = 'w-2 h-2 rounded-full bg-slate-500';
+                els.bleHeaderLabel.textContent = '기기 연결';
+                els.btnBluetoothModal.classList.remove('border-sky-500/50', 'bg-sky-950/60');
+
+                els.bleModalIconBox.className = 'w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 shrink-0';
+                els.bleModalDeviceName.textContent = '연결된 기기 없음';
+                els.bleModalDeviceSub.textContent = '주변 BLE 기기를 검색하거나 가상 HUD를 연결하세요';
+                els.btnDisconnectBle.classList.add('hidden');
+                els.virtualHudMiniPreview.classList.add('hidden');
+            }
+        }
+
+        // 실제 Web Bluetooth 기기 검색 및 GATT 연결
+        async function connectRealBluetoothDevice() {
+            if (!navigator.bluetooth) {
+                appendBleLog('이 브라우저는 Web Bluetooth API를 지원하지 않습니다. (Chrome/Edge 권장)', 'err');
+                showToast('현재 브라우저에서 Web Bluetooth를 지원하지 않습니다. 가상 스마트 글래스를 이용해보세요.', 'error');
+                return;
+            }
+
+            try {
+                appendBleLog('주변 블루투스(BLE) 기기 스캔 창을 엽니다...', 'info');
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [
+                        BLE_UART_SERVICE_UUID,
+                        '0000ffe0-0000-1000-8000-00805f9b34fb', // HM-10 BLE Serial
+                        'generic_access',
+                        'battery_service'
+                    ]
+                });
+
+                const devName = device.name || `BLE 기기 (${device.id.slice(0, 6)})`;
+                appendBleLog(`기기 선택됨: ${devName}. GATT 서버 연결 중...`, 'info');
+
+                device.addEventListener('gattserverdisconnected', () => {
+                    appendBleLog(`기기 연결이 끊어졌습니다: ${devName}`, 'err');
+                    state.ble.connected = false;
+                    state.ble.device = null;
+                    state.ble.server = null;
+                    state.ble.writeCharacteristic = null;
+                    updateBluetoothUI();
+                    showToast('블루투스 기기 연결이 해제되었습니다.', 'info');
+                });
+
+                const server = await device.gatt.connect();
+                appendBleLog('GATT 서버 연결 성공! 쓰기 가능 특성(Characteristic) 탐색 중...', 'info');
+
+                let foundWriteChar = null;
+                try {
+                    const services = await server.getPrimaryServices();
+                    for (const service of services) {
+                        const chars = await service.getCharacteristics();
+                        for (const char of chars) {
+                            if (char.properties.write || char.properties.writeWithoutResponse) {
+                                foundWriteChar = char;
+                                appendBleLog(`데이터 전송 채널 확보 (${char.uuid.slice(0, 8)}...)`, 'rx');
+                                break;
+                            }
+                        }
+                        if (foundWriteChar) break;
+                    }
+                } catch (svcErr) {
+                    appendBleLog('일부 표준 서비스 접근 제한됨 (기본 연결 유지)', 'info');
+                }
+
+                state.ble.connected = true;
+                state.ble.isVirtual = false;
+                state.ble.device = device;
+                state.ble.server = server;
+                state.ble.writeCharacteristic = foundWriteChar;
+                state.ble.deviceName = devName;
+
+                updateBluetoothUI();
+                showToast(`${devName} 연결 완료!`, 'success');
+
+                // 이미 풀린 문제가 있다면 즉시 전송
+                if (state.solvedResults.length > 0 && els.chkAutoSendBle.checked) {
+                    sendSolvedResultsToBluetooth(state.solvedResults);
+                }
+            } catch (err) {
+                if (err.name === 'NotFoundError') {
+                    appendBleLog('기기 선택이 취소되었습니다.', 'info');
+                } else {
+                    appendBleLog(`연결 오류: ${err.message}`, 'err');
+                    showToast('블루투스 연결에 실패했습니다.', 'error');
+                }
+            }
+        }
+
+        // 가상 AR 스마트 안경 시뮬레이션 연결
+        function connectVirtualSmartGlasses() {
+            if (state.ble.connected && !state.ble.isVirtual && state.ble.device?.gatt?.connected) {
+                state.ble.device.gatt.disconnect();
+            }
+
+            state.ble.connected = true;
+            state.ble.isVirtual = true;
+            state.ble.device = null;
+            state.ble.writeCharacteristic = null;
+            state.ble.deviceName = 'AR 스마트 글래스 HUD (가상)';
+
+            updateBluetoothUI();
+            appendBleLog('가상 블루투스 기기 [AR 스마트 글래스 HUD] 연결 완료!', 'rx');
+            els.virtualHudText.textContent = '[연결됨] 문제 스캔 대기 중...';
+            showToast('가상 AR 스마트 글래스가 연결되었습니다!', 'success');
+
+            if (state.solvedResults.length > 0) {
+                sendSolvedResultsToBluetooth(state.solvedResults);
+            }
+        }
+
+        function disconnectBluetooth() {
+            if (state.ble.device && state.ble.device.gatt && state.ble.device.gatt.connected) {
+                state.ble.device.gatt.disconnect();
+            }
+            state.ble.connected = false;
+            state.ble.isVirtual = false;
+            state.ble.device = null;
+            state.ble.server = null;
+            state.ble.writeCharacteristic = null;
+            state.ble.deviceName = '';
+
+            updateBluetoothUI();
+            appendBleLog('블루투스 기기 연결을 종료했습니다.', 'info');
+            showToast('블루투스 연결이 해제되었습니다.', 'info');
+        }
+
+        // BLE로 문자열 패킷 전송 (20바이트 청크 분할 지원)
+        async function writeTextToBle(textPayload) {
+            if (!state.ble.connected) return;
+
+            appendBleLog(`TX -> ${textPayload}`, 'tx');
+
+            if (state.ble.isVirtual) {
+                els.virtualHudText.textContent = textPayload;
+                return;
+            }
+
+            if (!state.ble.writeCharacteristic) {
+                appendBleLog('연결된 기기에 쓰기 가능한 BLE 특성이 없어 로그만 기록됩니다.', 'info');
+                return;
+            }
+
+            try {
+                const encoder = new TextEncoder();
+                const data = encoder.encode(textPayload + '\n');
+                const chunkSize = 20; // 표준 BLE MTU 호환 청크 크기
+
+                for (let i = 0; i < data.length; i += chunkSize) {
+                    const chunk = data.slice(i, i + chunkSize);
+                    if (state.ble.writeCharacteristic.properties.writeWithoutResponse) {
+                        await state.ble.writeCharacteristic.writeValueWithoutResponse(chunk);
+                    } else {
+                        await state.ble.writeCharacteristic.writeValue(chunk);
+                    }
+                }
+            } catch (err) {
+                appendBleLog(`전송 실패: ${err.message}`, 'err');
+            }
+        }
+
+        async function sendSolvedResultsToBluetooth(items, customStartNum = 1) {
+            if (!state.ble.connected) {
+                showToast('연결된 블루투스 기기가 없습니다.', 'error');
+                return;
+            }
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                const num = items.length === 1 ? customStartNum : i + 1;
+                const packet = `[${item.subject || '일반'}] ${num}번 정답: ${item.answer}`;
+                await writeTextToBle(packet);
+            }
+            showToast(`블루투스 기기로 ${items.length}개 정답을 전송했습니다.`, 'success');
+        }
+
+        function openBluetoothModal() {
+            els.bluetoothModal.classList.remove('hidden');
+            requestAnimationFrame(() => {
+                els.bleModalBackdrop.classList.remove('opacity-0');
+                els.bleModalCard.classList.remove('scale-95', 'opacity-0');
+                els.bleModalCard.classList.add('scale-100', 'opacity-100');
+            });
+        }
+
+        function closeBluetoothModal() {
+            els.bleModalBackdrop.classList.add('opacity-0');
+            els.bleModalCard.classList.remove('scale-100', 'opacity-100');
+            els.bleModalCard.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => {
+                els.bluetoothModal.classList.add('hidden');
+            }, 200);
+        }
+
+        // ==========================================
+        // 이벤트 리스너 바인딩
+        // ==========================================
+        els.btnMainAction.addEventListener('click', () => {
+            if (state.mode === 'camera') {
+                const captured = captureFromVideo();
+                if (captured) {
+                    processImageAndSolve(captured.dataUrl, captured.base64, captured.mimeType);
+                }
+            } else {
+                if (!state.stream) {
+                    initCamera();
+                } else {
+                    setCameraModeUI();
+                }
+            }
+        });
+
+        els.fileInput.addEventListener('change', handleFileUpload);
+        els.btnSample.addEventListener('click', generateAndSolveSample);
+        els.btnFallbackSample.addEventListener('click', generateAndSolveSample);
+
+        els.btnSwitchCamera.addEventListener('click', () => {
+            state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
+            initCamera();
+        });
+
+        els.btnToggleAR.addEventListener('click', () => {
+            state.arVisible = !state.arVisible;
+            if (state.arVisible) {
+                els.btnToggleAR.innerHTML = '<i class="ph-fill ph-eye"></i><span>AR 숨기기</span>';
+                renderAROverlays();
+            } else {
+                els.btnToggleAR.innerHTML = '<i class="ph-fill ph-eye-slash"></i><span>AR 보기</span>';
+                els.arLayer.classList.add('hidden');
+            }
+        });
+
+        els.btnQuickBleSend.addEventListener('click', () => {
+            if (!state.ble.connected) {
+                openBluetoothModal();
+                showToast('전송할 블루투스 기기를 먼저 연결하세요.', 'info');
+            } else if (state.solvedResults.length > 0) {
+                sendSolvedResultsToBluetooth(state.solvedResults);
+            }
+        });
+
+        // 상세 풀이 드로어 이벤트
+        els.btnShowExplanation.addEventListener('click', openExplanationDrawer);
+        els.btnCloseDrawer.addEventListener('click', closeExplanationDrawer);
+        els.btnCloseDrawerBottom.addEventListener('click', closeExplanationDrawer);
+        els.drawerBackdrop.addEventListener('click', closeExplanationDrawer);
+        els.btnSendAllBleDrawer.addEventListener('click', () => {
+            if (!state.ble.connected) {
+                closeExplanationDrawer();
+                openBluetoothModal();
+                showToast('블루투스 기기를 먼저 연결해주세요.', 'info');
+            } else {
+                sendSolvedResultsToBluetooth(state.solvedResults);
+            }
+        });
+
+        // 블루투스 모달 이벤트
+        els.btnBluetoothModal.addEventListener('click', openBluetoothModal);
+        els.virtualHudMiniPreview.addEventListener('click', openBluetoothModal);
+        els.btnCloseBleModal.addEventListener('click', closeBluetoothModal);
+        els.bleModalBackdrop.addEventListener('click', closeBluetoothModal);
+        els.btnScanRealBle.addEventListener('click', connectRealBluetoothDevice);
+        els.btnConnectVirtualBle.addEventListener('click', connectVirtualSmartGlasses);
+        els.btnDisconnectBle.addEventListener('click', disconnectBluetooth);
+
+        els.btnSendCustomBle.addEventListener('click', () => {
+            const val = els.inputBleCustomMsg.value.trim();
+            if (!val) return;
+            if (!state.ble.connected) {
+                showToast('먼저 블루투스 기기를 연결해주세요.', 'error');
+                return;
+            }
+            writeTextToBle(val);
+            els.inputBleCustomMsg.value = '';
+        });
+
+        els.inputBleCustomMsg.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') els.btnSendCustomBle.click();
+        });
+
+        els.btnClearBleLog.addEventListener('click', () => {
+            els.bleLogConsole.innerHTML = '<div class="text-slate-500">[SYSTEM] 로그가 초기화되었습니다.</div>';
+        });
+
+        // 화면 리사이즈 및 이미지 로드 시 AR 좌표 동기화
+        window.addEventListener('resize', () => {
+            if (state.mode === 'result' && state.arVisible) {
+                renderAROverlays();
+            }
+        });
+
+        els.capturedImg.addEventListener('load', () => {
+            if (state.mode === 'result' && state.solvedResults.length > 0) {
+                renderAROverlays();
+            }
+        });
+
+        // 앱 시작 시 카메라 초기화
+        window.addEventListener('load', () => {
+            initCamera();
+        });
+    </script>
+</body>
+</html>
